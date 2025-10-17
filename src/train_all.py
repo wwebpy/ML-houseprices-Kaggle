@@ -14,6 +14,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 
+
 try:
     from xgboost import XGBRegressor
     HAS_XGB = True
@@ -25,6 +26,9 @@ try:
     HAS_LGBM = True
 except Exception:
     HAS_LGBM = False
+
+# Feature Engineering importieren
+from feature_engineering import build_features
 
 
 # =========================
@@ -123,6 +127,10 @@ def main():
     df = pd.read_csv(DATA_PATH)
     if TARGET not in df.columns:
         raise ValueError(f"Zielspalte '{TARGET}' fehlt.")
+
+    # Feature Engineering anwenden (Train)
+    df = build_features(df)
+
     y = df[TARGET].astype(float)
     X = df.drop(columns=[TARGET])
 
@@ -193,8 +201,11 @@ def main():
     print(df_res[["Model", "Variant", "MAE", "RMSE", "R2", "CV_RMSE_mean", "CV_RMSE_std", "Path"]].round(3))
 
     # Tabelle speichern
-    df_res.to_csv(MODELS_DIR / "results.csv", index=False)
-    print(f"\n✅ Ergebnisse gespeichert: {MODELS_DIR / 'results.csv'}")
+    RESULTS_DIR = PROJECT_ROOT / "results"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    results_file = RESULTS_DIR / "results_all.csv"
+    df_res.to_csv(results_file, index=False)
+    print(f"\n✅ Ergebnisse gespeichert: {results_file}")
 
     # ======= Submission-Datei erzeugen (beste Modellvariante) =======
     best_row = df_res.iloc[0]
@@ -211,6 +222,8 @@ def main():
         return
 
     x_test = pd.read_csv(test_path)
+    # Feature Engineering anwenden (Test)
+    x_test = build_features(x_test)
     predictions = best_model.predict(x_test)
 
     submissions_dir = PROJECT_ROOT / "Submissions"

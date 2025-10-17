@@ -1,229 +1,86 @@
-from pathlib import Path
-import numpy as np
 import pandas as pd
-import joblib
-from typing import Dict, Tuple
+import numpy as np
+from scipy.stats import skew
 
-from sklearn.model_selection import train_test_split, KFold, cross_val_score
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+def build_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
-from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    # 1) Wichtige numerische → kategorische Casts
+    for col in ["MSSubClass", "MoSold", "YrSold"]:
+        if col in df.columns:
+            df[col] = df[col].astype("category")
 
-# Optional: XGBoost / LightGBM
-try:
-    from xgboost import XGBRegressor
-    HAS_XGB = True
-except Exception:
-    HAS_XGB = False
+    # Helper (Null-sichere Addition)
+    def _g(name: str, fill=0):
+        return df[name].fillna(fill) if name in df.columns else 0
 
-try:
-    from lightgbm import LGBMRegressor
-    HAS_LGBM = True
-except Exception:
-    HAS_LGBM = False
+    # 2) Kern-Features
+    if {"TotalBsmtSF", "1stFlrSF", "2ndFlrSF"}.issubset(df.columns):
+        df["TotalSF"] = _g("TotalBsmtSF") + _g("1stFlrSF") + _g("2ndFlrSF")
 
-# Importiere dein Feature Engineering
-from feature_engineering import build_features
-
-# =========================
-# Pfade & Settings
-# =========================
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = PROJECT_ROOT / "data" / "house-prices-advanced-regression-techniques" / "train.csv"
-MODELS_DIR = PROJECT_ROOT / "models"
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
-TARGET = "SalePrice"
-TEST_SIZE = 0.20
-RANDOM_STATE = 42
-N_SPLITS = 5
-
-# =========================
-# Helper
-# =========================
-def build_preprocessor(X: pd.DataFrame) -> Tuple[ColumnTransformer, list, list]:
-    num_cols = X.select_dtypes(include=["number"]).columns.tolist()
-    cat_cols = X.select_dtypes(exclude=["number"]).columns.tolist()
-
-    num_pipe = Pipeline([("imputer", SimpleImputer(strategy="median"))])
-    cat_pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("ohe", OneHotEncoder(handle_unknown="ignore", sparse=False))
-    ])
-
-    pre = ColumnTransformer(
-        transformers=[
-            ("num", num_pipe, num_cols),
-            ("cat", cat_pipe, cat_cols),
-        ],
-        remainder="drop"
-    )
-    return pre, num_cols, cat_cols
-
-
-def evaluate(y_true, y_pred) -> Dict[str, float]:
-    mae = mean_absolute_error(y_true, y_pred)
-    mse = mean_squared_error(y_true, y_pred)
-    rmse = np.sqrt(mse)
-    r2 = r2_score(y_true, y_pred)
-    return {"MAE": mae, "RMSE": rmse, "R2": r2}
-
-
-def cv_rmse(pipe, X, y, n_splits=5, seed=42) -> Tuple[float, float]:
-    cv = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    scores = cross_val_score(pipe, X, y, cv=cv, scoring="neg_mean_squared_error", n_jobs=-1)
-    rmse = np.sqrt(-scores)
-    return rmse.mean(), rmse.std()
-
-# =========================
-# MODELLE TRAINIEREN
-# =========================
-def make_models() -> Dict[str, object]:
-    models = {
-        "LinearRegression": LinearRegression(),
-        "Ridge": Ridge(alpha=5.0),
-        "RandomForest": RandomForestRegressor(
-            n_estimators=400, random_state=RANDOM_STATE, n_jobs=-1
-        ),
-        "GradientBoosting": GradientBoostingRegressor(random_state=RANDOM_STATE),
-    }
-    if HAS_XGB:
-        models["XGBoost"] = XGBRegressor(
-            n_estimators=600, learning_rate=0.05, max_depth=4,
-            subsample=0.8, colsample_bytree=0.8, random_state=RANDOM_STATE,
-            n_jobs=-1, reg_lambda=1.0, objective="reg:squarederror"
+    if {"FullBath", "HalfBath", "BsmtFullBath", "BsmtHalfBath"}.issubset(df.columns):
+        df["TotalBath"] = (
+            _g("FullBath") + 0.5 * _g("HalfBath") +
+            _g("BsmtFullBath") + 0.5 * _g("BsmtHalfBath")
         )
-    if HAS_LGBM:
-        models["LightGBM"] = LGBMRegressor(
-            n_estimators=800, learning_rate=0.05, num_leaves=31,
-            random_state=RANDOM_STATE, n_jobs=-1
+
+    if {"OpenPorchSF", "EnclosedPorch", "3SsnPorch", "ScreenPorch"}.issubset(df.columns):
+        df["TotalPorchSF"] = (
+            _g("OpenPorchSF") + _g("EnclosedPorch") +
+            _g("3SsnPorch") + _g("ScreenPorch")
         )
-    return models
 
+    if {"GarageCars", "GarageArea"}.issubset(df.columns):
+        df["GarageCapacity"] = _g("GarageCars") * _g("GarageArea")
 
-def wrap_log_target(estimator: object, pre: ColumnTransformer) -> TransformedTargetRegressor:
-    return TransformedTargetRegressor(
-        regressor=Pipeline([("pre", pre), ("model", estimator)]),
-        func=np.log1p, inverse_func=np.expm1
-    )
+    # 3) Alters-Features
+    if "YrSold" in df.columns and "YearBuilt" in df.columns:
+        df["HouseAge"] = df["YrSold"].astype(int) - df["YearBuilt"]
+    if "YrSold" in df.columns and "YearRemodAdd" in df.columns:
+        df["RemodAge"] = df["YrSold"].astype(int) - df["YearRemodAdd"]
 
+    # 4) Sinnvolle Imputationen
+    # LotFrontage nach Neighborhood-Median
+    if {"Neighborhood", "LotFrontage"}.issubset(df.columns):
+        df["LotFrontage"] = df.groupby("Neighborhood")["LotFrontage"] \
+                              .transform(lambda s: s.fillna(s.median()))
 
-def build_plain_pipe(estimator: object, pre: ColumnTransformer) -> Pipeline:
-    return Pipeline([("pre", pre), ("model", estimator)])
+    # 5) Rare-Label-Bündelung (reduziert Rauschen)
+    def rare_to_other(series: pd.Series, min_freq: int = 20) -> pd.Series:
+        vc = series.value_counts(dropna=False)
+        rare = vc[vc < min_freq].index
+        return series.where(~series.isin(rare), other="Other")
 
+    for col in ["Neighborhood", "Exterior1st", "Exterior2nd", "Condition1", "Condition2",
+                "RoofMatl", "MasVnrType", "Electrical", "SaleType", "SaleCondition"]:
+        if col in df.columns and df[col].dtype.name in ("object", "category"):
+            df[col] = rare_to_other(df[col])
 
-def main():
-    # ======= Daten laden =======
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"Datendatei nicht gefunden: {DATA_PATH}")
+    # 6) Interaktionen / Verhältnisse
+    if {"OverallQual", "TotalSF"}.issubset(df.columns):
+        df["Qual_SF"] = df["OverallQual"] * df["TotalSF"]
 
-    df = pd.read_csv(DATA_PATH)
-    if TARGET not in df.columns:
-        raise ValueError(f"Zielspalte '{TARGET}' fehlt.")
+    if {"TotalSF", "TotRmsAbvGrd"}.issubset(df.columns):
+        df["SF_perRoom"] = df["TotalSF"] / df["TotRmsAbvGrd"].replace(0, np.nan)
 
-    # === Feature Engineering ===
-    df = build_features(df)
+    if {"TotalBath", "BedroomAbvGr"}.issubset(df.columns):
+        df["BathPerBed"] = df["TotalBath"] / df["BedroomAbvGr"].replace(0, np.nan)
 
-    y = df[TARGET].astype(float)
-    X = df.drop(columns=[TARGET])
+    if {"OverallQual", "OverallCond"}.issubset(df.columns):
+        df["QualCond"] = df["OverallQual"] * df["OverallCond"]
 
-    pre, num_cols, cat_cols = build_preprocessor(X)
-    print(f"Daten: {df.shape} | Num: {len(num_cols)} | Cat: {len(cat_cols)}")
+    # Verhältnisse: NaN/Inf abfangen
+    for col in ["SF_perRoom", "BathPerBed"]:
+        if col in df.columns:
+            df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(0)
 
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
-    )
+    # 7) Log1p für stark schiefe numerische Spalten (nur wenn >= 0)
+    num_cols = df.select_dtypes(include=["number"]).columns
+    if len(num_cols) > 0:
+        skews = df[num_cols].apply(lambda s: skew(s.dropna()))
+        skewed = skews[skews > 0.75].index.tolist()
+        for col in skewed:
+            if (df[col] >= 0).all():
+                df[col] = np.log1p(df[col])
 
-    base_models = make_models()
-    results = []
-
-    for name, est in base_models.items():
-        # ---- RAW ----
-        pipe_raw = build_plain_pipe(est, pre)
-        print(f"\n🔵 Trainiere {name} (raw target)...")
-        pipe_raw.fit(X_train, y_train)
-        pred_raw = pipe_raw.predict(X_val)
-        m_raw = evaluate(y_val, pred_raw)
-        cv_mean_raw, cv_std_raw = cv_rmse(pipe_raw, X, y, n_splits=N_SPLITS, seed=RANDOM_STATE)
-
-        path_raw = MODELS_DIR / f"{name}_raw.pkl"
-        joblib.dump(
-            {"pipeline": pipe_raw, "target": TARGET, "use_log_target": False,
-             "num_cols": num_cols, "cat_cols": cat_cols, "model_name": name},
-            path_raw
-        )
-        print(f"→ RAW  MAE:{m_raw['MAE']:,.2f}  RMSE:{m_raw['RMSE']:,.2f}  R²:{m_raw['R2']:.3f}  |  CV-RMSE:{cv_mean_raw:,.2f}±{cv_std_raw:,.2f}")
-        results.append({
-            "Model": name, "Variant": "raw",
-            "MAE": m_raw["MAE"], "RMSE": m_raw["RMSE"], "R2": m_raw["R2"],
-            "CV_RMSE_mean": cv_mean_raw, "CV_RMSE_std": cv_std_raw,
-            "Path": str(path_raw)
-        })
-
-        # ---- LOG ----
-        pipe_log = wrap_log_target(est, pre)
-        print(f"🟣 Trainiere {name} (log target)...")
-        pipe_log.fit(X_train, y_train)
-        pred_log = pipe_log.predict(X_val)
-        m_log = evaluate(y_val, pred_log)
-        cv_mean_log, cv_std_log = cv_rmse(pipe_log, X, y, n_splits=N_SPLITS, seed=RANDOM_STATE)
-
-        path_log = MODELS_DIR / f"{name}_log.pkl"
-        joblib.dump(
-            {"pipeline": pipe_log, "target": TARGET, "use_log_target": True,
-             "num_cols": num_cols, "cat_cols": cat_cols, "model_name": name},
-            path_log
-        )
-        print(f"→ LOG  MAE:{m_log['MAE']:,.2f}  RMSE:{m_log['RMSE']:,.2f}  R²:{m_log['R2']:.3f}  |  CV-RMSE:{cv_mean_log:,.2f}±{cv_std_log:,.2f}")
-        results.append({
-            "Model": name, "Variant": "log",
-            "MAE": m_log["MAE"], "RMSE": m_log["RMSE"], "R2": m_log["R2"],
-            "CV_RMSE_mean": cv_mean_log, "CV_RMSE_std": cv_std_log,
-            "Path": str(path_log)
-        })
-
-    # ======= Ergebnisse =======
-    df_res = pd.DataFrame(results)
-    df_res = df_res.sort_values(by=["RMSE", "CV_RMSE_mean"]).reset_index(drop=True)
-    print("\n📊 Gesamtergebnis (sortiert nach RMSE):")
-    print(df_res[["Model", "Variant", "MAE", "RMSE", "R2", "CV_RMSE_mean", "CV_RMSE_std", "Path"]].round(3))
-
-    df_res.to_csv(MODELS_DIR / "results.csv", index=False)
-    print(f"\n✅ Ergebnisse gespeichert: {MODELS_DIR / 'results.csv'}")
-
-    # ======= Submission mit bestem Modell =======
-    best_row = df_res.iloc[0]
-    best_model_path = Path(best_row["Path"])
-    print(f"\n🏆 Bestes Modell: {best_row['Model']} ({best_row['Variant']}) -> {best_model_path.name}")
-
-    bundle = joblib.load(best_model_path)
-    best_model = bundle["pipeline"]
-
-    test_path = DATA_PATH.parent / "test.csv"
-    if not test_path.exists():
-        print(f"⚠️ Testdatei nicht gefunden: {test_path}")
-        return
-
-    x_test = pd.read_csv(test_path)
-    x_test = build_features(x_test)  # <- Feature Engineering auch auf Testdaten anwenden
-    predictions = best_model.predict(x_test)
-
-    submissions_dir = PROJECT_ROOT / "Submissions"
-    submissions_dir.mkdir(parents=True, exist_ok=True)
-
-    output = pd.DataFrame({
-        "Id": x_test["Id"],
-        "SalePrice": predictions
-    })
-    submission_path = submissions_dir / f"submission_{best_row['Model']}.csv"
-    output.to_csv(submission_path, index=False)
-    print(f"📤 Submission gespeichert: {submission_path}")
-
-
-if __name__ == "__main__":
-    main()
+    return df

@@ -2,6 +2,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import joblib
+import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold
 from sklearn.compose import ColumnTransformer
@@ -11,41 +12,7 @@ from sklearn.impute import SimpleImputer
 
 from xgboost import XGBRegressor
 import xgboost as xgb
-
-# === Feature Engineering ===
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    # Gewünschte kategorische Casts
-    for col in ["MSSubClass", "MoSold", "YrSold"]:
-        if col in df.columns:
-            df[col] = df[col].astype("category")
-
-    # Safe getter
-    def _g(name: str, fill=0):
-        return df[name].fillna(fill) if name in df.columns else 0
-
-    # Domain-Features
-    if {"TotalBsmtSF","1stFlrSF","2ndFlrSF"}.issubset(df.columns):
-        df["TotalSF"] = _g("TotalBsmtSF") + _g("1stFlrSF") + _g("2ndFlrSF")
-    if {"FullBath","HalfBath","BsmtFullBath","BsmtHalfBath"}.issubset(df.columns):
-        df["TotalBath"] = _g("FullBath") + 0.5*_g("HalfBath") + _g("BsmtFullBath") + 0.5*_g("BsmtHalfBath")
-    if {"OpenPorchSF","EnclosedPorch","3SsnPorch","ScreenPorch"}.issubset(df.columns):
-        df["TotalPorchSF"] = _g("OpenPorchSF") + _g("EnclosedPorch") + _g("3SsnPorch") + _g("ScreenPorch")
-    if {"GarageCars","GarageArea"}.issubset(df.columns):
-        df["GarageCapacity"] = _g("GarageCars") * _g("GarageArea")
-
-    # Altersfeatures
-    if "YrSold" in df.columns and "YearBuilt" in df.columns:
-        df["HouseAge"] = df["YrSold"].astype(int) - df["YearBuilt"]
-    if "YrSold" in df.columns and "YearRemodAdd" in df.columns:
-        df["RemodAge"] = df["YrSold"].astype(int) - df["YearRemodAdd"]
-
-    # Kleine Interaktion (oft nützlich)
-    if {"OverallQual", "TotalSF"}.issubset(df.columns):
-        df["Qual_SF"] = df["OverallQual"] * df["TotalSF"]
-
-    return df
+from feature_engineering import build_features
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +102,11 @@ def main():
     print(f"✅ Beste CV-Params: {best_params}")
     print(f"✅ Beste CV-RMSE: {-search.best_score_:,.2f}")
 
+    # CV-Statistiken des besten Kandidaten erfassen
+    best_idx = search.best_index_
+    cv_mean = -float(search.cv_results_["mean_test_score"][best_idx])
+    cv_std = float(search.cv_results_["std_test_score"][best_idx])
+
     # === Retrain mit Early Stopping (Callbacks, kein eval_metric in fit/ctor) ===
     print("🚀 Retrain best params mit Early Stopping …")
     xgb_best = XGBRegressor(
@@ -144,7 +116,7 @@ def main():
         n_jobs=-1,
         random_state=RANDOM_STATE,
     )
-    # Version-adaptive early stopping: try callbacks (xgboost>=2.0), fallback to early_stopping_rounds (xgboost<2.0)
+    # Version-adaptive early stopping: try callbacks (xgboost>=2.0), fallback zu early_stopping_rounds (xgboost<2.0)
     try:
         xgb_best.fit(
             X_tr_enc, y_tr_log,
@@ -160,7 +132,7 @@ def main():
                 verbose=False
             )
         except TypeError:
-            # As a last resort, fit without early stopping
+            # Fallback: ohne Early Stopping
             xgb_best.fit(X_tr_enc, y_tr_log)
 
     # Holdout-Eval
@@ -169,6 +141,51 @@ def main():
     rmse = np.sqrt(((pred - y_val) ** 2).mean())
     mae = np.mean(np.abs(pred - y_val))
     print(f"🏁 Holdout – RMSE: {rmse:,.2f} | MAE: {mae:,.2f}")
+    from sklearn.metrics import r2_score
+    r2 = r2_score(y_val, pred)
+    print(f"➡️ R2 Score: {r2:.4f}")
+
+    # === SHAP Feature Importance (TreeExplainer) ===
+    try:
+        import shap
+        print("📊 Berechne SHAP Feature Importances …")
+
+        # Ensure dense matrix for plotting
+        try:
+            import scipy.sparse as sp
+            X_val_dense = X_val_enc.toarray() if sp.issparse(X_val_enc) else X_val_enc
+        except Exception:
+            X_val_dense = X_val_enc
+
+        # Try to get feature names from the preprocessor
+        try:
+            feature_names = pre.get_feature_names_out()
+        except Exception:
+            # Fallback: generic names
+            feature_names = np.array([f"f{i}" for i in range(X_val_dense.shape[1])])
+
+        explainer = shap.TreeExplainer(xgb_best)
+        shap_values = explainer(X_val_dense)
+        try:
+            shap_values.feature_names = feature_names
+        except Exception:
+            pass
+
+        # Bar plot (global importance)
+        shap.plots.bar(shap_values, show=False)
+        plt.tight_layout()
+        (PROJECT_ROOT/"models").mkdir(parents=True, exist_ok=True)
+        plt.savefig(PROJECT_ROOT/"models"/"shap_xgb_bar.png", dpi=200)
+        plt.close()
+
+        # Beeswarm (distributional effects)
+        shap.plots.beeswarm(shap_values, show=False)
+        plt.tight_layout()
+        plt.savefig(PROJECT_ROOT/"models"/"shap_xgb_beeswarm.png", dpi=200)
+        plt.close()
+        print("✅ SHAP Plots gespeichert: models/shap_xgb_bar.png, models/shap_xgb_beeswarm.png")
+    except Exception as e:
+        print(f"⚠️ SHAP Analyse übersprungen: {e}")
 
     # === Optional: Multi-Seed-Blending auf Holdout ===
     print("🎲 Starte Seed-Blending (5 Modelle) …")
@@ -259,12 +276,50 @@ def main():
     else:
         print("⚠️ Testdatei nicht gefunden – keine Submission erstellt.")
 
+    # === Persistente Ergebnis-Tabelle (lokal) ===
+    try:
+        results_row = {
+            "Model": "XGBoost",
+            "Variant": "log",
+            "MAE": float(mae),
+            "RMSE": float(rmse),
+            "R2": float(r2),
+            "CV_RMSE_mean": float(cv_mean),
+            "CV_RMSE_std": float(cv_std),
+            "Path": str(MODEL_PATH),
+            "Submission": submission_path_str if 'submission_path_str' in locals() else "– keine –",
+        }
+        results_df = pd.DataFrame([results_row])
+
+        results_file = PROJECT_ROOT / "results" / "results_tuned_xgb.csv"
+        results_file.parent.mkdir(parents=True, exist_ok=True)
+        if results_file.exists():
+            old = pd.read_csv(results_file)
+            all_df = pd.concat([old, results_df], ignore_index=True)
+            # Optional: Duplikate (gleiches Model+Variant+Path) entfernen
+            all_df = all_df.drop_duplicates(subset=["Model", "Variant", "Path"], keep="last")
+        else:
+            all_df = results_df
+        # Nach RMSE sortieren
+        all_df = all_df.sort_values(by=["RMSE", "CV_RMSE_mean"]).reset_index(drop=True)
+        all_df.to_csv(results_file, index=False)
+
+        # Schöne Konsolenübersicht ähnlich train_all.py
+        print("\nGesamtergebnis (lokal, sortiert nach RMSE):")
+        with pd.option_context("display.float_format", lambda v: f"{v:,.3f}"):
+            cols = ["Model","Variant","MAE","RMSE","R2","CV_RMSE_mean","CV_RMSE_std","Path"]
+            print(all_df[cols])
+        print(f"\n💾 Lokale Ergebnisdatei aktualisiert: {results_file}")
+    except Exception as e:
+        print(f"⚠️ Konnte Ergebnisdatei nicht schreiben: {e}")
+
     # === Summary Printout ===
     submission_path_str = str(submission_path) if 'submission_path' in locals() else "– keine –"
     print("\n📊 Zusammenfassung:")
     print("────────────────────────────")
     print(f"Holdout RMSE: {rmse:,.2f}")
     print(f"Holdout MAE : {mae:,.2f}")
+    print(f"Holdout R2  : {r2:.4f}")
     print(f"Blend RMSE  : {blend_rmse:,.2f}")
     print("────────────────────────────")
     print(f"Best Params : {best_params}")
