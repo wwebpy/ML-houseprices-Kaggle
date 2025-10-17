@@ -74,13 +74,4 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(0)
 
-    # 7) Log1p für stark schiefe numerische Spalten (nur wenn >= 0)
-    num_cols = df.select_dtypes(include=["number"]).columns
-    if len(num_cols) > 0:
-        skews = df[num_cols].apply(lambda s: skew(s.dropna()))
-        skewed = skews[skews > 0.75].index.tolist()
-        for col in skewed:
-            if (df[col] >= 0).all():
-                df[col] = np.log1p(df[col])
-
     return df

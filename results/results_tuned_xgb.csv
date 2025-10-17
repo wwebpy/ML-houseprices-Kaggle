@@ -1,2 +1,2 @@
 Model,Variant,MAE,RMSE,R2,CV_RMSE_mean,CV_RMSE_std,Path,Submission
-XGBoost,log,0.08738374730523141,0.13855304700240945,0.8942555287939148,0.009610999587362395,0.0009862542401646434,/Users/burak1/Development/Kaggle/HousePrices/HousePrices/models/xgb_tuned_log.pkl,– keine –
+XGBoost,log,14714.07290400254,22972.974427332738,0.9206337525682087,0.122556754498693,0.011531132221947947,/Users/burak1/Development/Kaggle/HousePrices/HousePrices/models/xgb_tuned_log.pkl,– keine –

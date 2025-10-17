@@ -268,11 +268,39 @@ def main():
             test_blends.append(np.expm1(model.predict(X_test_enc)))
         preds = np.mean(test_blends, axis=0)
 
+        # --- Sanity Guard: ensure predictions are in dollar-space and valid ---
+        try:
+            import numpy as _np
+            med = _np.nanmedian(preds)
+            if med < 1000:  # looks like log-space
+                print("⚠️ Detected log-scale predictions for test — converting with expm1.")
+                preds = _np.expm1(preds)
+
+            # Ensure all predictions are finite and positive
+            if not _np.isfinite(preds).all():
+                print("⚠️ Non-finite predictions detected — fixing with nanmedian.")
+                finite = preds[_np.isfinite(preds)]
+                fallback = _np.nanmedian(finite) if finite.size else 180000.0
+                preds = _np.where(_np.isfinite(preds), preds, fallback)
+            preds = _np.clip(preds, 1.0, None)
+        except Exception as _e:
+            print(f"⚠️ Sanity guard skipped: {_e}")
+
+        # Ensure Id is integer
+        if x_test["Id"].dtype != int:
+            x_test["Id"] = x_test["Id"].astype(int)
+
         submissions_dir = PROJECT_ROOT / "Submissions"
         submissions_dir.mkdir(exist_ok=True)
         submission_path = submissions_dir / "submission_xgb_tuned.csv"
         pd.DataFrame({"Id": x_test["Id"], "SalePrice": preds}).to_csv(submission_path, index=False)
         print(f"📦 Submission gespeichert: {submission_path}")
+        # Post-save verification
+        try:
+            _chk = pd.read_csv(submission_path)
+            print("🔎 Submission check — rows:", len(_chk), " median:", float(_chk["SalePrice"].median()))
+        except Exception as _e:
+            print(f"⚠️ Could not re-read submission for verification: {_e}")
     else:
         print("⚠️ Testdatei nicht gefunden – keine Submission erstellt.")
 
