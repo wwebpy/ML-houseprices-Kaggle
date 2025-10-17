@@ -1,0 +1,17 @@
+# Virtuelle Umgebung
+.venv/
+venv/
+
+# Cache & temporäres
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Modelle & Daten
+models/
+data/
+!data/README.md
+
+# IDE & OS
+.vscode/
+.DS_Store
