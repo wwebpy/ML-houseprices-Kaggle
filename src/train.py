@@ -196,6 +196,34 @@ def main():
     df_res.to_csv(MODELS_DIR / "results.csv", index=False)
     print(f"\n✅ Ergebnisse gespeichert: {MODELS_DIR / 'results.csv'}")
 
+    # ======= Submission-Datei erzeugen (beste Modellvariante) =======
+    best_row = df_res.iloc[0]
+    best_model_path = Path(best_row["Path"])
+    print(f"\n🏆 Bestes Modell: {best_row['Model']} ({best_row['Variant']}) -> {best_model_path.name}")
+
+    bundle = joblib.load(best_model_path)
+    best_model = bundle["pipeline"]
+
+    # Testdaten laden
+    test_path = DATA_PATH.parent / "test.csv"
+    if not test_path.exists():
+        print(f"⚠️ Testdatei nicht gefunden: {test_path}")
+        return
+
+    x_test = pd.read_csv(test_path)
+    predictions = best_model.predict(x_test)
+
+    submissions_dir = PROJECT_ROOT / "Submissions"
+    submissions_dir.mkdir(parents=True, exist_ok=True)
+
+    output = pd.DataFrame({
+        "Id": x_test["Id"],
+        "SalePrice": predictions
+    })
+    submission_path = submissions_dir / "submission_Catboost.csv"
+    output.to_csv(submission_path, index=False)
+    print(f"Your submission was successfully saved to: {submission_path}")
+
 
 if __name__ == "__main__":
     main()
