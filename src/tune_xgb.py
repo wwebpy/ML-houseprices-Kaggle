@@ -107,6 +107,31 @@ def main():
     cv_mean = -float(search.cv_results_["mean_test_score"][best_idx])
     cv_std = float(search.cv_results_["std_test_score"][best_idx])
 
+    # --- Real-scale CV (Dollar-RMSE) mit den besten Parametern ---
+    cv_means_real = []
+    cv = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    for tr_idx, va_idx in cv.split(X_tr_enc):
+        Xtr, Xva = X_tr_enc[tr_idx], X_tr_enc[va_idx]
+        ytr, yva = y_tr_log.iloc[tr_idx], y_tr_log.iloc[va_idx]
+
+        mdl = XGBRegressor(
+            **best_params,
+            objective="reg:squarederror",
+            tree_method="hist",
+            n_jobs=-1,
+            random_state=RANDOM_STATE,
+        )
+        mdl.fit(Xtr, ytr)
+        preds_log = mdl.predict(Xva)
+        preds = np.expm1(preds_log)
+        y_true = np.expm1(yva)
+        rmse_fold = np.sqrt(((preds - y_true) ** 2).mean())
+        cv_means_real.append(float(rmse_fold))
+
+    cv_mean_real = float(np.mean(cv_means_real))
+    cv_std_real = float(np.std(cv_means_real))
+    print(f"💡 Real-scale CV RMSE (Dollar): {cv_mean_real:,.2f} ± {cv_std_real:,.2f}")
+
     # === Retrain mit Early Stopping (Callbacks, kein eval_metric in fit/ctor) ===
     print("🚀 Retrain best params mit Early Stopping …")
     xgb_best = XGBRegressor(
@@ -308,12 +333,12 @@ def main():
     try:
         results_row = {
             "Model": "XGBoost",
-            "Variant": "log",
+            "Variant": "log",   
             "MAE": float(mae),
             "RMSE": float(rmse),
             "R2": float(r2),
-            "CV_RMSE_mean": float(cv_mean),
-            "CV_RMSE_std": float(cv_std),
+            "CV_RMSE_mean": float(cv_mean_real),
+            "CV_RMSE_std": float(cv_std_real),
             "Path": str(MODEL_PATH),
             "Submission": submission_path_str if 'submission_path_str' in locals() else "– keine –",
         }
